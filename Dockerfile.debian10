@@ -1,0 +1,23 @@
+FROM debian:buster
+
+RUN apt-get update && apt-get install -y libvirt-dev curl git gcc
+
+ARG GO_VERSION
+ARG GO_LINUX_AMD64_SHA256
+RUN curl -sSL https://storage.googleapis.com/golang/go${GO_VERSION}.linux-amd64.tar.gz > go.tar.gz && \
+	(echo "$GO_LINUX_AMD64_SHA256  go.tar.gz" | sha256sum -c) && \
+	tar -C /usr/local -xf go.tar.gz && \
+	rm go.tar.gz
+
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/go/bin:/go/bin
+
+
+# make XDG_CACHE world-writable for use by unprivileged build user
+ARG BUILD_USER
+RUN mkdir -p /.cache /go && chown $BUILD_USER /.cache /go
+
+USER $BUILD_USER
+WORKDIR /src
+
+VOLUME /go
+
