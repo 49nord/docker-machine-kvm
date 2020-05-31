@@ -337,23 +337,20 @@ func (d *Driver) validatePrivateNetwork() error {
 		DNSForwarders: d.DNSForwarders,
 	})
 	if err != nil {
-		log.Errorf("Failed to render network xml: %s", err)
-		return nil
+		return fmt.Errorf("render network xml: %w", err)
 	}
 
 	network, err = conn.NetworkDefineXML(networkXML.String())
 	if err != nil {
-		log.Errorf("Failed to create private network: %s", err)
-		return nil
+		return fmt.Errorf("define network: %w", err)
 	}
 	err = network.SetAutostart(true)
 	if err != nil {
-		log.Warnf("Failed to set private network to autostart: %s", err)
+		return fmt.Errorf("set network autostart: %w", err)
 	}
 	err = network.Create()
 	if err != nil {
-		log.Warnf("Failed to Start network: %s", err)
-		return err
+		return fmt.Errorf("start network: %w", err)
 	}
 	return nil
 }
@@ -390,6 +387,7 @@ func (d *Driver) PreCreateCheck() error {
 	}
 	err = d.validatePrivateNetwork()
 	if err != nil {
+		log.Errorf("failed to validate or create private network: %s", err)
 		return err
 	}
 	err = d.validateNetwork(d.Network)
