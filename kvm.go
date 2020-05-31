@@ -74,15 +74,43 @@ const (
     </rng>
   </devices>
 </domain>`
-	networkXML = `<network>
-  <name>%s</name>
-  <ip address='%s' netmask='%s'>
+)
+
+func mustTemplate(name, text string) *template.Template {
+	t, err := template.New(name).Parse(text)
+	if err != nil {
+		panic(err)
+	}
+	return t
+}
+
+var (
+	defaultDNSResolvers = []string{"192.168.42.1"}
+)
+var networkXMLTemplate = mustTemplate("network-xml", `
+<network>
+  <name>{{.Name}}</name>
+  <domain name='{{ or .Domain (printf "%s.local" .Name ) }}.local' localOnly='no'/>
+  <dns>
+{{- range .DNSForwarders -}}
+    <forwarder addr='{{ . }}' />
+{{ end -}}
+</dns>
+  <ip address='{{ .HostAddr }}' netmask='{{ .HostNetmask }}'>
     <dhcp>
-      <range start='%s' end='%s'/>
+      <range start='{{ .DHCPStart }}' end='{{ .DHCPEnd }}'/>
     </dhcp>
   </ip>
-</network>`
-)
+</network>`)
+
+type networkXMLTemplateData struct {
+	Name               string
+	HostAddr           string
+	HostNetmask        string
+	DHCPStart, DHCPEnd string
+	Domain             string   // optional
+	DNSForwarders      []string // optional
+}
 
 type Driver struct {
 	*drivers.BaseDriver
@@ -99,6 +127,7 @@ type Driver struct {
 	DiskPath         string
 	CacheMode        string
 	IOMode           string
+	DNSForwarders    []string
 	connectionString string
 	conn             *libvirt.Connect
 	VM               *libvirt.Domain
@@ -150,6 +179,12 @@ func (d *Driver) GetCreateFlags() []mcnflag.Flag {
 			Usage:  "SSH username",
 			Value:  defaultSSHUser,
 		},
+		mcnflag.StringSliceFlag{
+			EnvVar: "KVM_DNS_FORWARDERS",
+			Name:   "kvm-dns-forwarders",
+			Usage:  "List of DNS resolver IPv4 addresses that the private network's dnsmasq will forward DNS requests to",
+			Value:  nil,
+		},
 		/* Not yet implemented
 		mcnflag.Flag{
 			Name:  "kvm-no-share",
@@ -200,6 +235,7 @@ func (d *Driver) SetConfigFromFlags(flags drivers.DriverOptions) error {
 	d.Boot2DockerURL = flags.String("kvm-boot2docker-url")
 	d.CacheMode = flags.String("kvm-cache-mode")
 	d.IOMode = flags.String("kvm-io-mode")
+	d.DNSForwarders = flags.StringSlice("kvm-dns-forwarders")
 
 	d.SwarmMaster = flags.Bool("swarm-master")
 	d.SwarmHost = flags.String("swarm-host")
@@ -274,6 +310,9 @@ func (d *Driver) validatePrivateNetwork() error {
 		if nw.Ip.Address == "" {
 			return fmt.Errorf("%s network doesn't have DHCP configured properly", d.PrivateNetwork)
 		}
+
+		// FIXME validate DNS settings are applied correctly (can't we just pre-render the XML and compare them structurally?)
+
 		// Corner case, but might happen...
 		if active, err := network.IsActive(); !active {
 			log.Debugf("Reactivating private network: %s", err)
@@ -287,13 +326,22 @@ func (d *Driver) validatePrivateNetwork() error {
 	}
 	// TODO - try a couple pre-defined networks and look for conflicts before
 	//        settling on one
-	xml := fmt.Sprintf(networkXML, d.PrivateNetwork,
-		"192.168.42.1",
-		"255.255.255.0",
-		"192.168.42.2",
-		"192.168.42.254")
+	var networkXML strings.Builder
+	err = networkXMLTemplate.Execute(&networkXML, networkXMLTemplateData{
+		Name:          d.PrivateNetwork,
+		HostAddr:      "192.168.42.1",
+		HostNetmask:   "255.255.255.0",
+		DHCPStart:     "192.168.42.2",
+		DHCPEnd:       "192.168.42.254",
+		Domain:        d.PrivateNetwork + ".local",
+		DNSForwarders: d.DNSForwarders,
+	})
+	if err != nil {
+		log.Errorf("Failed to render network xml: %s", err)
+		return nil
+	}
 
-	network, err = conn.NetworkDefineXML(xml)
+	network, err = conn.NetworkDefineXML(networkXML.String())
 	if err != nil {
 		log.Errorf("Failed to create private network: %s", err)
 		return nil
